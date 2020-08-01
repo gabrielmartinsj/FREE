@@ -763,14 +763,5 @@ for node in nodes:
     csv_reader = csv.writer(csv_file)
     for reception in node.downlinkrcvd:
       csv_reader.writerow(reception)
-#with open('teste.csv', 'w') as myfile:
-#  myfile.write([str(caracteres) for caracteres in nodes[0].requestBegin[0]])
-#myfile.close()
-# this can be done to keep graphics visible
-if (graphics == 1):
-    raw_input('Press Enter to continue ...')
-# with open('nodes.txt','w') as nfile:
-#     for n in nodes:
-#         nfile.write("{} {} {}\n".format(n.x, n.y, n.nodeid))
-# with open('basestation.txt', 'w') as bfile:
-#     bfile.write("{} {} {}\n".format(bsx, bsy, 0)
+
+print "Finish"
