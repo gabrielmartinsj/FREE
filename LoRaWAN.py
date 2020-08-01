@@ -152,7 +152,7 @@ def checkcollision(packet):
     return 0
 
 # check if the gateway can ack this packet at any of the receive windows
-# based on the duy cycle
+# based on the duty cycle
 def checkACK(packet):
     global  nearstACK1p
     global  nearstACK10p
@@ -165,6 +165,7 @@ def checkACK(packet):
         tempairtime = airtime(packet.sf, CodingRate, AckMessLen+LorawanHeader, Bandwidth)
         nearstACK1p[chanlindex] = timeofacking+(tempairtime/0.01)
         nodes[packet.nodeid].rxtime += tempairtime
+        nodes[packet.nodeid].downlinkrcvd.append([timeofacking, 1])
         return packet.acked
     else:
         # this packet can not be acked
@@ -181,6 +182,7 @@ def checkACK(packet):
         tempairtime = airtime(12, CodingRate, AckMessLen+LorawanHeader, Bandwidth)
         nearstACK10p = timeofacking+(tempairtime/0.1)
         nodes[packet.nodeid].rxtime += tempairtime
+        nodes[packet.nodeid].downlinkrcvd.append([timeofacking, 2])
         return packet.acked
     else:
         # this packet can not be acked
@@ -343,6 +345,8 @@ class myNode():
         self.rxtime = 0
         self.x = 0
         self.y = 0
+        self.uplink = []
+        self.downlinkrcvd = []
 
         # this is very complex prodecure for placing nodes
         # and ensure minimum distance between each pair of nodes
@@ -500,6 +504,7 @@ def transmit(env,node):
 
         # time sending and receiving
         # packet arrives -> add to base station
+        node.uplink.append([env.now, node.parameters.sf, node.parameters.txpow]) # Registers the time in which a node starts an uplink
         node.sent = node.sent + 1
         if (node in packetsAtBS):
             print "ERROR: packet already in"
@@ -534,11 +539,13 @@ def transmit(env,node):
             node.packet.acked = 1
             # the packet can be acked
             # check if the ack is lost or not
-            if((14 - Lpld0 - 10*gamma*math.log10(node.dist/d0) - np.random.normal(-var, var)) > sensi[node.packet.sf-7, [125,250,500].index(node.packet.bw) + 1]):
+            if((14 - Lpld0 - 10*gamma*math.log10(node.dist/d0) - np.random.normal(-var, var)) > sensi[12-7, 1]): # SF12 and Tx14
             # the ack is not lost
                 node.packet.acklost = 0
+
             else:
             # ack is lost
+                node.downlinkrcvd.pop()
                 node.packet.acklost = 1
         else:
             node.packet.acked = 0
@@ -746,10 +753,22 @@ with open(fname, "a") as myfile:
     myfile.write(newres)
 myfile.close()
 
+import csv
+for node in nodes:
+  with open('UL'+str(node.nodeid)+'.csv', 'w') as csv_file:
+    csv_reader = csv.writer(csv_file)
+    for transmission in node.uplink:
+      csv_reader.writerow(transmission)
+  with open('DL'+str(node.nodeid)+'.csv', 'w') as csv_file:
+    csv_reader = csv.writer(csv_file)
+    for reception in node.downlinkrcvd:
+      csv_reader.writerow(reception)
+#with open('teste.csv', 'w') as myfile:
+#  myfile.write([str(caracteres) for caracteres in nodes[0].requestBegin[0]])
+#myfile.close()
 # this can be done to keep graphics visible
 if (graphics == 1):
     raw_input('Press Enter to continue ...')
-
 # with open('nodes.txt','w') as nfile:
 #     for n in nodes:
 #         nfile.write("{} {} {}\n".format(n.x, n.y, n.nodeid))
