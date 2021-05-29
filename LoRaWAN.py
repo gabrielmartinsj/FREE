@@ -116,7 +116,7 @@ def checkcollision(packet):
         packet.processed = 1
 
     if packetsAtBS:
-        sb=0
+        ubs=[0]*numberBS
         # print "CHECK node {} (sf:{} bw:{} freq:{:.6e}) others: {}".format(
             #  packet.nodeid, packet.sf, packet.bw, packet.freq,
             #  len(packetsAtBS))
@@ -130,7 +130,7 @@ def checkcollision(packet):
                        # check who collides in the power domain
                        if (full_collision == 1):
                           # Capture effect
-                          c, sb = powerCollision_1(packet, other.packet)
+                          c, ubs = powerCollision_1(packet, other.packet)
                        else:
                           # Capture + Non-orthognalitiy SFs effects
                           c = powerCollision_2(packet, other.packet)
@@ -150,8 +150,8 @@ def checkcollision(packet):
                        packet.collided = 1
                        other.packet.collided = 1  # other also got lost, if it wasn't lost already
                        col = 1
-        return col, sb
-    return 0, 0
+        return col, np.array(ubs)
+    return 0, np.zeros(numberBS)
 
 # check if the gateway can ack this packet at any of the receive windows
 # based on the duty cycle
@@ -226,7 +226,7 @@ def sfCollision(p1, p2):
 def powerCollision_1(p1, p2):
     #powerThreshold = 6
     # print "pwr: node {0.nodeid} {0.rssi:3.2f} dBm node {1.nodeid} {1.rssi:3.2f} dBm; diff {2:3.2f} dBm".format(p1, p2, round(p1.rssi - p2.rssi,2))
-    safeBS = [0]*numberBS
+    UnsafeBS = [0]*numberBS
     if p1.sf == p2.sf:
         p_1 = 0
         p_2 = 0
@@ -237,19 +237,21 @@ def powerCollision_1(p1, p2):
                     # return both pack ets as casualties
                     p_1 += 1
                     p_2 += 1
+                    UnsafeBS[bs] += 1
                     # return (p1, p2)
 
             elif p1.rssi[bs] - p2.rssi[bs] < IsoThresholds[p1.sf-7][p2.sf-7]:
                     # p2 overpowered p1, return p1 as casualty
                     # print "collision pwr node {} overpowered node {}".format(p2.nodeid, p1.nodeid)
                     p_1 += 1
+                    UnsafeBS[bs] += 1
                     #collided.append([p1,bs])
                     #return (p1,)
             #    print "p1 wins, p2 lost"
             # p2 was the weaker packet, return it as a casualty
             else:
                 p_2 += 1
-                safeBS[bs] += 1
+                
                 #collided.append([p2,bs])
             #return (p2,)
 
@@ -257,12 +259,12 @@ def powerCollision_1(p1, p2):
         if p_1 > p_2:
             return (p1,), 0
         elif p_1 < p_2:
-            return (p2,), np.argmax(safeBS)
+            return (p2,), UnsafeBS
         else:
             return (p1,p2), 0
 
     else:
-        return (), 0
+        return (), UnsafeBS
 
 # check the capture effect and checking the effect of pesudo-orthognal SFs
 def powerCollision_2(p1, p2):
@@ -374,6 +376,7 @@ class myNode():
         self.downlinkrcvd = []
         self.edclass = "A"
         self.highestRSSI = []
+        self.availableBS = []
         # this is very complex prodecure for placing nodes
         # and ensure minimum distance between each pair of nodes
         found = 0
@@ -428,7 +431,7 @@ class assignParameters():
         self.bw = Bandwidth
         self.cr = CodingRate
         self.sf = 12#np.random.randint(7,13)
-        self.txpow = 6#np.random.randint(1,8)*2
+        self.txpow = 2#np.random.randint(1,8)*2
         self.rectime = airtime(self.sf, self.cr, LorawanHeader+PcktLength_SF[self.sf-7], self.bw)
         self.freq = 864000000#random.choice([872000000, 864000000, 860000000])
 
@@ -559,13 +562,15 @@ def transmit(env,node):
                     # Bad CRC
                     node.packet.perror = True
                 # adding packet if no collision
-                is_col, safeBS = checkcollision(node.packet)
+                is_col, unsafeBS = checkcollision(node.packet)
                 if (is_col==1):
                     node.packet.collided = 1
                 else:
                     node.packet.collided = 0
-                    node.highestRSSI.append(np.array([node.packet.rssi[safeBS],safeBS]))
-                if(not node.packet.perror and node.packet.collided == 0):
+                    RSSI_id = np.array(node.packet.rssi>=sensitivity) * np.array(unsafeBS == 0)
+                    node.highestRSSI.append(np.array(node.packet.rssi[RSSI_id]))
+                    node.availableBS.append(int(sum(RSSI_id)))
+                # if(not node.packet.perror and node.packet.collided == 0):
                     node.recv = node.recv + 1
                 packetsAtBS.append(node)
                 node.packet.addTime = env.now
@@ -815,14 +820,20 @@ myfile.close()
 x = np.zeros(len(nodes))
 y = np.zeros(len(nodes))
 der = np.zeros(len(nodes))
+number_BS = np.zeros(len(nodes))
 for i in range(len(nodes)):
     x[i] = nodes[i].x
     y[i] = nodes[i].y
     der[i] = nodeder2[i]
+    # number_BS[i] = nodes[i].highestRSSI[]
 plt.scatter(x,y,c=der)
 plt.scatter(bsx, bsy, s=100, marker='*',c='red')
 plt.colorbar()
-plt.show()
+# plt.show()
+fname="file{}.png".format(numberBS)
+plt.savefig(fname,dpi=200)
+print ("Finish")
 
 print(np.array(nodes[0].highestRSSI))
-print ("Finish")
+print(nodes[0].availableBS)
+print(der[0])
