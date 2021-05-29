@@ -8,7 +8,7 @@
 
 """
  SYNOPSIS:
-   ./confirmablelorawan.py <nodes> <avgsend> <datasize> <collision> <randomseed>
+   ./confirmablelorawan.py <nodes> <avgsend> <datasize> <maxDist> <collision> <randomseed> <number of BS>
  DESCRIPTION:
     nodes
         number of nodes to simulate
@@ -68,7 +68,7 @@ IS12 = np.array([-25,-25,-25,-24,-23,1])
 IsoThresholds = np.array([IS7,IS8,IS9,IS10,IS11,IS12])
 
 # Bandwidth
-Bandwidth = 500
+Bandwidth = 125
 # Coding Rate
 CodingRate = 1
 # packet size per SFs
@@ -399,33 +399,33 @@ class assignParameters():
         global GL
 
         self.nodeid = nodeid
-        self.txpow = 14
         self.bw = Bandwidth
         self.cr = CodingRate
-        self.sf = 12
+        self.sf = 7#np.random.randint(7,13)
+        self.txpow = 6#np.random.randint(1,8)*2
         self.rectime = airtime(self.sf, self.cr, LorawanHeader+PcktLength_SF[self.sf-7], self.bw)
-        self.freq = random.choice([872000000, 864000000, 860000000])
+        self.freq = 864000000#random.choice([872000000, 864000000, 860000000])
 
-        Prx = self.txpow  ## zero path loss by default
-        # log-shadow
-        Lpl = Lpld0 + 10*gamma*math.log10(distance/d0) + var
-        # print "Lpl:", Lpl
-        Prx = self.txpow - GL - Lpl
-        minairtime = 9999
-        minsf = 0
-        minbw = 0
+        # Prx = self.txpow  ## zero path loss by default
+        # # log-shadow
+        # Lpl = Lpld0 + 10*gamma*math.log10(distance/d0) + var
+        # # print "Lpl:", Lpl
+        # Prx = self.txpow - GL - Lpl
+        # minairtime = 9999
+        # minsf = 0
+        # minbw = 0
         # print "Prx:", Prx
-        for i in range(0,6):  # SFs
-            if ((sensi[i, [125,250,500].index(self.bw) + 1]) < Prx):
-                at = airtime(i+7, self.cr, LorawanHeader+PcktLength_SF[i], self.bw)
-                if at < minairtime:
-                    minairtime = at
-                    minsf = i+7
-                    minsensi = sensi[i, [125,250,500].index(self.bw) + 1]
-        # print "best sf:", minsf, " best bw: ", minbw, "best airtime:", minairtime
-        if (minsf != 0):
-            self.rectime = minairtime
-            self.sf = minsf
+        # for i in range(0,6):  # SFs
+        #     if ((sensi[i, [125,250,500].index(self.bw) + 1]) < Prx):
+        #         at = airtime(i+7, self.cr, LorawanHeader+PcktLength_SF[i], self.bw)
+        #         if at < minairtime:
+        #             minairtime = at
+        #             minsf = i+7
+        #             minsensi = sensi[i, [125,250,500].index(self.bw) + 1]
+        # # print "best sf:", minsf, " best bw: ", minbw, "best airtime:", minairtime
+        # if (minsf != 0):
+        #     self.rectime = minairtime
+        #     self.sf = minsf
 
         # SF, BW, CR and PWR distributions
         # print "bw", self.bw, "sf", self.sf, "cr", self.cr
@@ -485,11 +485,19 @@ class myPacket():
 # a global list of packet being processed at the gateway
 # is maintained
 #
+def dBm2lin(value):
+    return 1e-3*10**(value/10)
+
+def lin2dBm(value):
+    return 10*np.log10(value/1e-3)
+
 def transmit(env,node):
     while node.buffer > 0.0:
-        node.packet.rssi = node.packet.txpow - Lpld0 - 10*gamma*math.log10(node.dist/d0) - np.random.normal(-var, var)
+        # dBmPr = node.packet.txpow - Lpld0 - 10*gamma*math.log10(node.dist/d0)
+        h = np.random.rayleigh(np.sqrt(2/np.pi))
+        node.packet.rssi = lin2dBm( h**2 * dBm2lin(node.packet.txpow - Lpld0 - 10*gamma*math.log10(node.dist/d0)) )#node.packet.txpow - Lpld0 - 10*gamma*math.log10(node.dist/d0)# - np.random.normal(-var, var)
         # add maximum number of retransmissions
-        if (node.lstretans and node.lstretans <= 8):
+        if (node.lstretans and node.lstretans <= 0):
             node.first = 0
             node.buffer += PcktLength_SF[node.parameters.sf-7]
             # the randomization part (2 secs) to resove the collisions among retrasmissions
@@ -527,7 +535,8 @@ def transmit(env,node):
                     node.packet.collided = 1
                 else:
                     node.packet.collided = 0
-
+                if(not node.packet.perror and node.packet.collided == 0):
+                    node.recv = node.recv + 1
                 packetsAtBS.append(node)
                 node.packet.addTime = env.now
 
@@ -540,8 +549,11 @@ def transmit(env,node):
             node.packet.acked = 1
             # the packet can be acked
             # check if the ack is lost or not
-            if((14 - Lpld0 - 10*gamma*math.log10(node.dist/d0) - np.random.normal(-var, var)) > sensi[12-7, 1]): # SF12 and Tx14
+            h = np.random.rayleigh(np.sqrt(2/np.pi))
+            downlinkPr = lin2dBm( h**2 * dBm2lin(14 - Lpld0 - 10*gamma*math.log10(node.dist/d0)) )
+            #if((14 - Lpld0 - 10*gamma*math.log10(node.dist/d0) - np.random.normal(-var, var)) > sensi[12-7, 1]): # SF12 and Tx14
             # the ack is not lost
+            if downlinkPr < sensi[12-7,1]:
                 node.packet.acklost = 0
 
             else:
@@ -588,7 +600,7 @@ def transmit(env,node):
             global nrACKLost
             nrACKLost += 1
         else:
-            node.recv = node.recv + 1
+            # node.recv = node.recv + 1
             node.lstretans = 0
             global nrReceived
             nrReceived = nrReceived + 1
@@ -609,12 +621,13 @@ def transmit(env,node):
 #
 
 # get arguments
-if len(sys.argv) >= 6:
+if len(sys.argv) >= 7:
     nrNodes = int(sys.argv[1])
     avgSendTime = int(sys.argv[2])
     datasize = int(sys.argv[3])
-    full_collision = int(sys.argv[4])
-    Rnd = random.seed(int(sys.argv[5]))
+    maxDist = float(sys.argv[4])
+    full_collision = int(sys.argv[5])
+    Rnd = random.seed(int(sys.argv[6]))
     print ("Nodes:", nrNodes)
     print ("DataSize [bytes]", datasize)
     print ("AvgSendTime (exp. distributed):",avgSendTime)
@@ -651,15 +664,15 @@ nrNoACK = 0
 nrACKLost = 0
 
 Ptx = 9.75
-gamma = 2.08
-d0 = 40.0
-var = 2.0
-Lpld0 = 127.41
+gamma = 2.32 #2.08
+d0 = 1000 #40.0
+var = 7.8 #2.0
+Lpld0 = 128.95 #127.41
 GL = 0
 minsensi = np.amin(sensi[:,[125,250,500].index(Bandwidth) + 1])
 Lpl = Ptx - minsensi
-maxDist = d0*(10**((Lpl-Lpld0)/(10.0*gamma)))
-print ("maxDist:"), maxDist
+# maxDist = d0*(10**((Lpl-Lpld0)/(10.0*gamma)))
+print ("maxDist:", maxDist)
 
 # base station placement
 bsx = maxDist+10
@@ -708,12 +721,13 @@ TX = [22, 22, 22, 23,                                      # RFO/PA0: -2..1
 RX = 16
 V = 3.0     # voltage XXX
 sent = sum(n.sent for n in nodes)
+recv = sum(n.recv for n in nodes)
 energy = sum(((node.packet.rectime * node.sent * TX[int(node.packet.txpow)+2])+(node.rxtime * RX)) * V  for node in nodes)  / 1e3
 
 print ("energy (in J): ", energy)
 print ("sent packets: ", sent)
 print ("collisions: ", nrCollisions)
-print ("received packets: ", nrReceived)
+print ("received packets: ", recv)
 print ("processed packets: ", nrProcessed)
 print ("lost packets: ", nrLost)
 print ("Bad CRC: ", nrLostError)
@@ -721,7 +735,7 @@ print ("NoACK packets: ", nrNoACK)
 # data extraction rate
 der1 = (sent-nrCollisions)/float(sent) if sent!=0 else 0
 print ("DER:", der1)
-der2 = (nrReceived)/float(sent) if sent!=0 else 0
+der2 = (recv)/float(sent) if sent!=0 else 0
 print ("DER method 2:", der2)
 
 # data extraction rate per node
@@ -764,5 +778,15 @@ myfile.close()
 #     csv_reader = csv.writer(csv_file)
 #     for reception in node.downlinkrcvd:
 #       csv_reader.writerow(reception)
-
+x = np.zeros(len(nodes))
+y = np.zeros(len(nodes))
+der = np.zeros(len(nodes))
+for i in range(len(nodes)):
+    x[i] = nodes[i].x
+    y[i] = nodes[i].y
+    der[i] = nodeder2[i]
+plt.scatter(x,y,c=der)
+plt.scatter(bsx, bsy, s=100, marker='*',c='red')
+plt.colorbar()
+plt.show()
 print ("Finish")
