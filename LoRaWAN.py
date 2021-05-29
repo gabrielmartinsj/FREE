@@ -8,7 +8,7 @@
 
 """
  SYNOPSIS:
-   ./confirmablelorawan.py <nodes> <avgsend> <datasize> <maxDist> <collision> <randomseed> <number of BS>
+   ./confirmablelorawan.py <nodes> <avgsend> <datasize> <maxDist> <number of BS> <collision> <randomseed> 
  DESCRIPTION:
     nodes
         number of nodes to simulate
@@ -38,6 +38,7 @@ import re
 import matplotlib.pyplot as plt
 import os
 import operator
+import BS_coord
 
 # turn on/off graphics
 graphics = 0
@@ -115,6 +116,7 @@ def checkcollision(packet):
         packet.processed = 1
 
     if packetsAtBS:
+        sb=0
         # print "CHECK node {} (sf:{} bw:{} freq:{:.6e}) others: {}".format(
             #  packet.nodeid, packet.sf, packet.bw, packet.freq,
             #  len(packetsAtBS))
@@ -128,7 +130,7 @@ def checkcollision(packet):
                        # check who collides in the power domain
                        if (full_collision == 1):
                           # Capture effect
-                          c = powerCollision_1(packet, other.packet)
+                          c, sb = powerCollision_1(packet, other.packet)
                        else:
                           # Capture + Non-orthognalitiy SFs effects
                           c = powerCollision_2(packet, other.packet)
@@ -148,8 +150,8 @@ def checkcollision(packet):
                        packet.collided = 1
                        other.packet.collided = 1  # other also got lost, if it wasn't lost already
                        col = 1
-        return col
-    return 0
+        return col, sb
+    return 0, 0
 
 # check if the gateway can ack this packet at any of the receive windows
 # based on the duty cycle
@@ -198,14 +200,14 @@ def checkACK(packet):
 #        |f1-f2| <= 60 kHz if f1 or f2 has bw 250
 #        |f1-f2| <= 30 kHz if f1 or f2 has bw 125
 def frequencyCollision(p1,p2):
-    if (abs(p1.freq-p2.freq)<=120 and (p1.bw==500 or p2.freq==500)):
+    if (abs(p1.freq-p2.freq)<=120 and (p1.bw==500 or p2.freq==500) and np.array(p1.BS==p2.BS).sum()>=len(p1.BS)):
         # print "frequency coll 500"
         return True
-    elif (abs(p1.freq-p2.freq)<=60 and (p1.bw==250 or p2.freq==250)):
+    elif (abs(p1.freq-p2.freq)<=60 and (p1.bw==250 or p2.freq==250) and np.array(p1.BS==p2.BS).sum()>=len(p1.BS)):
         # print "frequency coll 250"
         return True
     else:
-        if (abs(p1.freq-p2.freq)<=30):
+        if (abs(p1.freq-p2.freq)<=30) and np.array(p1.BS==p2.BS).sum()>=len(p1.BS):
             # print "frequency coll 125"
             return True
         #else:
@@ -213,7 +215,7 @@ def frequencyCollision(p1,p2):
     return False
 
 def sfCollision(p1, p2):
-    if p1.sf == p2.sf:
+    if p1.sf == p2.sf and np.array(p1.BS==p2.BS).sum()>=len(p1.BS):
         # print "collision sf node {} and node {}".format(p1.nodeid, p2.nodeid)
         # p2 may have been lost too, will be marked by other checks
         return True
@@ -224,58 +226,81 @@ def sfCollision(p1, p2):
 def powerCollision_1(p1, p2):
     #powerThreshold = 6
     # print "pwr: node {0.nodeid} {0.rssi:3.2f} dBm node {1.nodeid} {1.rssi:3.2f} dBm; diff {2:3.2f} dBm".format(p1, p2, round(p1.rssi - p2.rssi,2))
+    safeBS = [0]*numberBS
     if p1.sf == p2.sf:
-       if abs(p1.rssi - p2.rssi) < IsoThresholds[p1.sf-7][p2.sf-7]:
-            # print "collision pwr both node {} and node {}".format(p1.nodeid, p2.nodeid)
-            # packets are too close to each other, both collide
-            # return both pack ets as casualties
-            return (p1, p2)
-       elif p1.rssi - p2.rssi < IsoThresholds[p1.sf-7][p2.sf-7]:
-            # p2 overpowered p1, return p1 as casualty
-            # print "collision pwr node {} overpowered node {}".format(p2.nodeid, p1.nodeid)
-            return (p1,)
-    #    print "p1 wins, p2 lost"
-       # p2 was the weaker packet, return it as a casualty
-       return (p2,)
+        p_1 = 0
+        p_2 = 0
+        for bs in p1.BS:
+            if abs(p1.rssi[bs] - p2.rssi[bs]) < IsoThresholds[p1.sf-7][p2.sf-7]:
+                    # print "collision pwr both node {} and node {}".format(p1.nodeid, p2.nodeid)
+                    # packets are too close to each other, both collide
+                    # return both pack ets as casualties
+                    p_1 += 1
+                    p_2 += 1
+                    # return (p1, p2)
+
+            elif p1.rssi[bs] - p2.rssi[bs] < IsoThresholds[p1.sf-7][p2.sf-7]:
+                    # p2 overpowered p1, return p1 as casualty
+                    # print "collision pwr node {} overpowered node {}".format(p2.nodeid, p1.nodeid)
+                    p_1 += 1
+                    #collided.append([p1,bs])
+                    #return (p1,)
+            #    print "p1 wins, p2 lost"
+            # p2 was the weaker packet, return it as a casualty
+            else:
+                p_2 += 1
+                safeBS[bs] += 1
+                #collided.append([p2,bs])
+            #return (p2,)
+
+
+        if p_1 > p_2:
+            return (p1,), 0
+        elif p_1 < p_2:
+            return (p2,), np.argmax(safeBS)
+        else:
+            return (p1,p2), 0
+
     else:
-       return ()
+        return (), 0
 
 # check the capture effect and checking the effect of pesudo-orthognal SFs
 def powerCollision_2(p1, p2):
     #powerThreshold = 6
     # print "SF: node {0.nodeid} {0.sf} node {1.nodeid} {1.sf}".format(p1, p2)
     # print "pwr: node {0.nodeid} {0.rssi:3.2f} dBm node {1.nodeid} {1.rssi:3.2f} dBm; diff {2:3.2f} dBm".format(p1, p2, round(p1.rssi - p2.rssi,2))
-    if p1.sf == p2.sf:
-       if abs(p1.rssi - p2.rssi) < IsoThresholds[p1.sf-7][p2.sf-7]:
-        #    print "collision pwr both node {} and node {}".format(p1.nodeid, p2.nodeid)
-           # packets are too close to each other, both collide
-           # return both packets as casualties
-           return (p1, p2)
-       elif p1.rssi - p2.rssi < IsoThresholds[p1.sf-7][p2.sf-7]:
-           # p2 overpowered p1, return p1 as casualty
-        #    print "collision pwr node {} overpowered node {}".format(p2.nodeid, p1.nodeid)
-        #    print "capture - p2 wins, p1 lost"
-           return (p1,)
-    #    print "capture - p1 wins, p2 lost"
-       # p2 was the weaker packet, return it as a casualty
-       return (p2,)
-    else:
-       if p1.rssi-p2.rssi > IsoThresholds[p1.sf-7][p2.sf-7]:
-        #   print "P1 is OK"
-          if p2.rssi-p1.rssi > IsoThresholds[p2.sf-7][p1.sf-7]:
-            #   print "p2 is OK"
-              return ()
-          else:
-            #   print "p2 is lost"
-              return (p2,)
-       else:
-        #    print "p1 is lost"
-           if p2.rssi-p1.rssi > IsoThresholds[p2.sf-7][p1.sf-7]:
-            #    print "p2 is OK"
-               return (p1,)
-           else:
-            #    print "p2 is lost"
-               return (p1,p2)
+    for bs in p1.BS:
+        if p1.sf == p2.sf:
+            if abs(p1.rssi[bs] - p2.rssi[bs]) < IsoThresholds[p1.sf-7][p2.sf-7]:
+                #    print "collision pwr both node {} and node {}".format(p1.nodeid, p2.nodeid)
+                # packets are too close to each other, both collide
+                # return both packets as casualties
+                return (p1, p2)
+            elif p1.rssi[bs] - p2.rssi[bs] < IsoThresholds[p1.sf-7][p2.sf-7]:
+                # p2 overpowered p1, return p1 as casualty
+                #    print "collision pwr node {} overpowered node {}".format(p2.nodeid, p1.nodeid)
+                #    print "capture - p2 wins, p1 lost"
+                return (p1,)
+            #    print "capture - p1 wins, p2 lost"
+            # p2 was the weaker packet, return it as a casualty
+            return (p2,)
+        else:
+            if p1.rssi[bs]-p2.rssi[bs] > IsoThresholds[p1.sf-7][p2.sf-7]:
+                #   print "P1 is OK"
+                if p2.rssi[bs]-p1.rssi[bs] > IsoThresholds[p2.sf-7][p1.sf-7]:
+                    #   print "p2 is OK"
+                    return ()
+                else:
+                    #   print "p2 is lost"
+                    return (p2,)
+            else:
+                #    print "p1 is lost"
+                if p2.rssi[bs]-p1.rssi[bs] > IsoThresholds[p2.sf-7][p1.sf-7]:
+                    #    print "p2 is OK"
+                    return (p1,)
+                else:
+                    #    print "p2 is lost"
+                    return (p1,p2)
 
 
 def timingCollision(p1, p2):
@@ -296,7 +321,7 @@ def timingCollision(p1, p2):
         # p1.nodeid, env.now - env.now, p1_cs - env.now, p1.rectime,
         # p2.nodeid, p2.addTime - env.now, p2_end - env.now
     # )
-    if p1_cs < p2_end:
+    if p1_cs < p2_end and np.array(p1.BS==p2.BS).sum()>=len(p1.BS):
         # p1 collided with p2 and lost
         # print "not late enough"
         return True
@@ -348,6 +373,7 @@ class myNode():
         self.uplink = []
         self.downlinkrcvd = []
         self.edclass = "A"
+        self.highestRSSI = []
         # this is very complex prodecure for placing nodes
         # and ensure minimum distance between each pair of nodes
         found = 0
@@ -358,8 +384,8 @@ class myNode():
             b = random.random()
             if b<a:
                 a,b = b,a
-            posx = b*maxDist*math.cos(2*math.pi*a/b)+bsx
-            posy = b*maxDist*math.sin(2*math.pi*a/b)+bsy
+            posx = b*maxDist*math.cos(2*math.pi*a/b)+maxDist
+            posy = b*maxDist*math.sin(2*math.pi*a/b)+maxDist
             if len(nodes) > 0:
                 for index, n in enumerate(nodes):
                     dist = np.sqrt(((abs(n.x-posx))**2)+((abs(n.y-posy))**2))
@@ -401,7 +427,7 @@ class assignParameters():
         self.nodeid = nodeid
         self.bw = Bandwidth
         self.cr = CodingRate
-        self.sf = 7#np.random.randint(7,13)
+        self.sf = 12#np.random.randint(7,13)
         self.txpow = 6#np.random.randint(1,8)*2
         self.rectime = airtime(self.sf, self.cr, LorawanHeader+PcktLength_SF[self.sf-7], self.bw)
         self.freq = 864000000#random.choice([872000000, 864000000, 860000000])
@@ -463,12 +489,13 @@ class myPacket():
         self.pl = LorawanHeader+PcktLength_SF[self.sf-7]
         self.symTime = (2.0**self.sf)/self.bw
         self.arriveTime = 0
-        if var == 0:
-            Lpl = Lpld0 + 10*gamma*math.log10(distance/d0)
-        else:
-            Lpl = Lpld0 + 10*gamma*math.log10(distance/d0) + np.random.normal(-var, var)
+        # if var == 0:
+        #     Lpl = Lpld0 + 10*gamma*math.log10(distance/d0)
+        # else:
+        #     Lpl = Lpld0 + 10*gamma*math.log10(distance/d0) + np.random.normal(-var, var)
 
-        self.rssi = self.txpow - GL - Lpl
+        self.rssi = np.array([])
+        self.BS = np.arange(numberBS)
         # print "node id", self.nodeid, "symTime ", self.symTime, "rssi", self.rssi
         self.rectime = airtime(self.sf,self.cr,self.pl,self.bw)
         # print "rectime node ", self.nodeid, "  ", self.rectime
@@ -495,7 +522,7 @@ def transmit(env,node):
     while node.buffer > 0.0:
         # dBmPr = node.packet.txpow - Lpld0 - 10*gamma*math.log10(node.dist/d0)
         h = np.random.rayleigh(np.sqrt(2/np.pi))
-        node.packet.rssi = lin2dBm( h**2 * dBm2lin(node.packet.txpow - Lpld0 - 10*gamma*math.log10(node.dist/d0)) )#node.packet.txpow - Lpld0 - 10*gamma*math.log10(node.dist/d0)# - np.random.normal(-var, var)
+        node.packet.rssi = lin2dBm( h**2 * dBm2lin(node.packet.txpow - Lpld0 - 10*gamma*np.log10(node.dist/d0)) )#node.packet.txpow - Lpld0 - 10*gamma*math.log10(node.dist/d0)# - np.random.normal(-var, var)
         # add maximum number of retransmissions
         if (node.lstretans and node.lstretans <= 0):
             node.first = 0
@@ -519,22 +546,25 @@ def transmit(env,node):
             # print "ERROR: packet already in"
         else:
             sensitivity = sensi[node.packet.sf - 7, [125,250,500].index(node.packet.bw) + 1]
-            if node.packet.rssi < sensitivity:
+            node.packet.BS = np.where(node.packet.rssi>=sensitivity)[0]
+            if (node.packet.rssi < sensitivity).all():
                 # print "node {}: packet will be lost".format(node.nodeid)
                 node.packet.lost = True
             else:
                 node.packet.lost = False
-                if (per(node.packet.sf,node.packet.bw,node.packet.cr,node.packet.rssi,node.packet.pl) < random.uniform(0,1)):
+                if (per(node.packet.sf,node.packet.bw,node.packet.cr,max(node.packet.rssi),node.packet.pl) < random.uniform(0,1)):
                     # OK CRC
                     node.packet.perror = False
                 else:
                     # Bad CRC
                     node.packet.perror = True
                 # adding packet if no collision
-                if (checkcollision(node.packet)==1):
+                is_col, safeBS = checkcollision(node.packet)
+                if (is_col==1):
                     node.packet.collided = 1
                 else:
                     node.packet.collided = 0
+                    node.highestRSSI.append(np.array([node.packet.rssi[safeBS],safeBS]))
                 if(not node.packet.perror and node.packet.collided == 0):
                     node.recv = node.recv + 1
                 packetsAtBS.append(node)
@@ -549,8 +579,9 @@ def transmit(env,node):
             node.packet.acked = 1
             # the packet can be acked
             # check if the ack is lost or not
+            chosen_BS = np.argmax(node.packet.rssi)
             h = np.random.rayleigh(np.sqrt(2/np.pi))
-            downlinkPr = lin2dBm( h**2 * dBm2lin(14 - Lpld0 - 10*gamma*math.log10(node.dist/d0)) )
+            downlinkPr = lin2dBm( h**2 * dBm2lin(14 - Lpld0 - 10*gamma*math.log10(node.dist[chosen_BS]/d0)) )
             #if((14 - Lpld0 - 10*gamma*math.log10(node.dist/d0) - np.random.normal(-var, var)) > sensi[12-7, 1]): # SF12 and Tx14
             # the ack is not lost
             if downlinkPr < sensi[12-7,1]:
@@ -626,13 +657,15 @@ if len(sys.argv) >= 7:
     avgSendTime = int(sys.argv[2])
     datasize = int(sys.argv[3])
     maxDist = float(sys.argv[4])
-    full_collision = int(sys.argv[5])
-    Rnd = random.seed(int(sys.argv[6]))
+    numberBS = int(sys.argv[5])
+    full_collision = int(sys.argv[6])
+    Rnd = random.seed(int(sys.argv[7]))
     print ("Nodes:", nrNodes)
     print ("DataSize [bytes]", datasize)
     print ("AvgSendTime (exp. distributed):",avgSendTime)
+    print ("Number of BS: ", numberBS)
     print ("Full Collision: ", full_collision)
-    print ("Random Seed: ", int(sys.argv[5]))
+    print ("Random Seed: ", int(sys.argv[6]))
 else:
     print ("usage: ./confirmablelorawan <nodes> <avgsend> <datasize> <collision> <randomseed>")
     exit(-1)
@@ -675,10 +708,11 @@ Lpl = Ptx - minsensi
 print ("maxDist:", maxDist)
 
 # base station placement
-bsx = maxDist+10
-bsy = maxDist+10
-xmax = bsx + maxDist + 10
-ymax = bsy + maxDist + 10
+BS_coordinates = BS_coord.base_coordinates(numberBS,maxDist)
+bsx = BS_coordinates[:,0]#maxDist+10
+bsy = BS_coordinates[:,1]#maxDist+10
+# xmax = bsx + maxDist + 10
+# ymax = bsy + maxDist + 10
 
 # prepare graphics and add sink
 if (graphics == 1):
@@ -789,4 +823,6 @@ plt.scatter(x,y,c=der)
 plt.scatter(bsx, bsy, s=100, marker='*',c='red')
 plt.colorbar()
 plt.show()
+
+print(np.array(nodes[0].highestRSSI))
 print ("Finish")
