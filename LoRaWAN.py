@@ -76,8 +76,8 @@ CodingRate = 1
 PcktLength_SF = [20,20,20,20,20,20]
 LorawanHeader = 7
 # last time the gateway acked a package
-nearstACK1p = [0,0,0] # 3 channels with 1% duty cycle
-nearstACK10p = 0 # one channel with 10% duty cycle
+nearstACK1p = np.zeros((8,3)) # 3 channels with 1% duty cycle for each BS
+nearstACK10p = [0]*8 # one channel with 10% duty cycle for each BS
 AckMessLen = 0
 
 #
@@ -161,11 +161,11 @@ def checkACK(packet):
     # check ack in the first window
     chanlindex=[872000000, 864000000, 860000000].index(packet.freq)
     timeofacking = env.now + 1  # one sec after receiving the packet
-    if (timeofacking >= nearstACK1p[chanlindex]):
+    if (timeofacking >= nearstACK1p[np.argmax(abs(packet.highestRSSI[-1])),chanlindex]):
         # this packet can be acked
         packet.acked = 1
         tempairtime = airtime(packet.sf, CodingRate, AckMessLen+LorawanHeader, Bandwidth)
-        nearstACK1p[chanlindex] = timeofacking+(tempairtime/0.01)
+        nearstACK1p[np.argmax(abs(packet.highestRSSI[-1])),chanlindex] = timeofacking+(tempairtime/0.01)
         nodes[packet.nodeid].rxtime += tempairtime
         nodes[packet.nodeid].downlinkrcvd.append([timeofacking, 1])
         return packet.acked
@@ -178,11 +178,11 @@ def checkACK(packet):
 
     # chcek ack in the second window
     timeofacking = env.now + 2  # two secs after receiving the packet
-    if (timeofacking >= nearstACK10p):
+    if (timeofacking >= nearstACK10p[np.argmax(abs(packet.highestRSSI[-1]))]):
         # this packet can be acked
         packet.acked = 1
         tempairtime = airtime(12, CodingRate, AckMessLen+LorawanHeader, Bandwidth)
-        nearstACK10p = timeofacking+(tempairtime/0.1)
+        nearstACK10p[np.argmax(abs(packet.highestRSSI[-1]))] = timeofacking+(tempairtime/0.1)
         nodes[packet.nodeid].rxtime += tempairtime
         nodes[packet.nodeid].downlinkrcvd.append([timeofacking, 2])
         return packet.acked
@@ -230,13 +230,13 @@ def powerCollision_1(p1, p2):
     if p1.sf == p2.sf:
         p_1 = 0
         p_2 = 0
+        p_12 = 0
         for bs in p1.BS:
             if abs(p1.rssi[bs] - p2.rssi[bs]) < IsoThresholds[p1.sf-7][p2.sf-7]:
                     # print "collision pwr both node {} and node {}".format(p1.nodeid, p2.nodeid)
                     # packets are too close to each other, both collide
                     # return both pack ets as casualties
-                    p_1 += 1
-                    p_2 += 1
+                    p_12 += 1
                     UnsafeBS[bs] += 1
                     # return (p1, p2)
 
@@ -256,12 +256,12 @@ def powerCollision_1(p1, p2):
             #return (p2,)
 
 
-        if p_1 > p_2:
-            return (p1,), 0
-        elif p_1 < p_2:
+        if p_1 > p_2 and p_1 > p_12:
+            return (p1,), UnsafeBS
+        elif p_2 > p_1 and p_2 > p_12:
             return (p2,), UnsafeBS
         else:
-            return (p1,p2), 0
+            return (p1,p2), UnsafeBS
 
     else:
         return (), UnsafeBS
@@ -509,6 +509,8 @@ class myPacket():
         self.perror = False
         self.acked = 0
         self.acklost = 0
+        self.highestRSSI = []
+        self.availableBS = []
 
 #
 # main discrete event loop, runs for each node
@@ -568,8 +570,9 @@ def transmit(env,node):
                 else:
                     node.packet.collided = 0
                     RSSI_id = np.array(node.packet.rssi>=sensitivity) * np.array(unsafeBS == 0)
-                    node.highestRSSI.append(np.array(node.packet.rssi[RSSI_id]))
-                    node.availableBS.append(int(sum(RSSI_id)))
+                    node.packet.rssi *= RSSI_id
+                    node.packet.highestRSSI.append(np.array(node.packet.rssi))
+                    node.packet.availableBS.append((RSSI_id).astype(int))
                 # if(not node.packet.perror and node.packet.collided == 0):
                     node.recv = node.recv + 1
                 packetsAtBS.append(node)
@@ -584,7 +587,7 @@ def transmit(env,node):
             node.packet.acked = 1
             # the packet can be acked
             # check if the ack is lost or not
-            chosen_BS = np.argmax(node.packet.rssi)
+            chosen_BS = np.argmax(abs(node.packet.highestRSSI[-1]))
             h = np.random.rayleigh(np.sqrt(2/np.pi))
             downlinkPr = lin2dBm( h**2 * dBm2lin(14 - Lpld0 - 10*gamma*math.log10(node.dist[chosen_BS]/d0)) )
             #if((14 - Lpld0 - 10*gamma*math.log10(node.dist/d0) - np.random.normal(-var, var)) > sensi[12-7, 1]): # SF12 and Tx14
@@ -819,21 +822,27 @@ myfile.close()
 #       csv_reader.writerow(reception)
 x = np.zeros(len(nodes))
 y = np.zeros(len(nodes))
-der = np.zeros(len(nodes))
+der = nodeder2#np.zeros(len(nodes))
 number_BS = np.zeros(len(nodes))
+avdist = np.zeros(len(nodes))
 for i in range(len(nodes)):
     x[i] = nodes[i].x
     y[i] = nodes[i].y
-    der[i] = nodeder2[i]
+    # der[i] = nodes[i].noack/(nodes[i].sent)#nodeder2[i]
+    number_BS[i] = np.average(nodes[i].availableBS)
+    avdist[i] = np.average(nodes[i].dist)
     # number_BS[i] = nodes[i].highestRSSI[]
 plt.scatter(x,y,c=der)
 plt.scatter(bsx, bsy, s=100, marker='*',c='red')
 plt.colorbar()
+plt.show()
+# fname="file{}.png".format(numberBS)
+# plt.savefig(fname,dpi=200)
+# plt.scatter(avdist,number_BS,alpha=0.5,c=der)
+# plt.colorbar()
 # plt.show()
-fname="file{}.png".format(numberBS)
-plt.savefig(fname,dpi=200)
 print ("Finish")
 
-print(np.array(nodes[0].highestRSSI))
-print(nodes[0].availableBS)
-print(der[0])
+# print(np.array(nodes[0].highestRSSI))
+# print(nodes[0].availableBS)
+# print(der[0])
