@@ -40,7 +40,7 @@ import matplotlib.pyplot as plt
 import os
 import operator
 import BS_coord
-
+import time
 # turn on/off graphics
 graphics = 0
 
@@ -417,8 +417,8 @@ class myNode():
             self.ADRcommand = 0
             self.firstADR = False
             self.DER_ref = DER_ref
-            self.frame_counting = []
         self.last_count = -1
+        self.frame_counting = []
         # this is very complex prodecure for placing nodes
         # and ensure minimum distance between each pair of nodes
 
@@ -483,7 +483,7 @@ class myNode():
 
     def calc_ADR_NS(self):
         if self.packet.frameid > self.last_count:
-            if self.buffer <= datasize/2:
+            if env.now < datasize/2:#self.buffer <= datasize/2:
                 self.recv = self.recv + 1
             self.last_count = self.packet.frameid
             self.RSSIhist.append(max(self.packet.rssi))
@@ -635,7 +635,8 @@ def lin2dBm(value):
 global maxretr
 maxretr = 0
 def transmit(env,node):
-    while node.buffer > 0.0:
+    while env.now < datasize: #node.buffer > 0.0:
+        # print(env.now)
         h = np.random.rayleigh(np.sqrt(2/np.pi))
         node.packet.rssi = lin2dBm(h**2 * dBm2lin(node.packet.txpow + GL - Lpld0 - 10*gamma*np.log10(node.dist/d0)))#node.packet.txpow - Lpld0 - 10*gamma*math.log10(node.dist/d0)# - np.random.normal(-var, var)
         # add maximum number of retransmissions
@@ -651,7 +652,7 @@ def transmit(env,node):
             nexttx = random.expovariate(1.0/float(node.period))
             while(nexttx < airtime(12, CodingRate, AckMessLen+LorawanHeader, Bandwidth)/0.01): # fixed DC
                 nexttx = random.expovariate(1.0/float(node.period))
-            if node.buffer <= datasize/2:
+            if env.now < datasize/2: #node.buffer <= datasize/2:
                 node.sent = node.sent + 1
             yield env.timeout(nexttx)
 
@@ -754,7 +755,7 @@ def transmit(env,node):
         elif node.packet.collided == 1:
             #node.buffer += PcktLength_SF[node.parameters.sf-7]
             # print "node {0.nodeid} buffer {0.buffer} bytes".format(node)
-            if node.lstretans >= maxretr and node.buffer <= datasize/2:
+            if node.lstretans >= maxretr and env.now <= datasize/2:#node.buffer <= datasize/2:
                 node.coll = node.coll + 1
                 global nrCollisions
                 nrCollisions = nrCollisions +1
@@ -800,7 +801,7 @@ margin_db = 0
 if len(sys.argv) >= 6:
     nrNodes = int(sys.argv[1])
     avgSendTime = int(sys.argv[2])
-    datasize = int(sys.argv[3])
+    datasize = float(sys.argv[3])*60*60*24#int(sys.argv[3])
     maxDist = float(sys.argv[4])
     numberBS = int(sys.argv[5])
     ADR = bool(int(sys.argv[6]))
@@ -878,6 +879,7 @@ if (graphics == 1):
     ax.add_artist(plt.Circle((bsx, bsy), 3, fill=True, color='green'))
     ax.add_artist(plt.Circle((bsx, bsy), maxDist, fill=False, color='green'))
 
+start = time.time()
 for i in range(0,nrNodes):
     # myNode takes period (in ms), base station id packetlen (in Bytes)
     node = myNode(i,bsId, avgSendTime, datasize, ADR, ADRtype, margin_db)
@@ -895,7 +897,10 @@ if (graphics == 1):
     plt.show()
 
 # start simulation
-env.run()
+env.run(until=datasize)
+end = time.time()
+
+print("time",(end-start))
 #env.run(until=simtime)
 
 # print stats and save into file
@@ -1007,17 +1012,18 @@ smargins = {
     30:    10
 }
 margins = [0]*11
-margin_db = np.zeros(len(nodes))
+margin_db = np.ones(len(nodes))
 for i in range(len(nodes)):
     sf[sfd[nodes[i].packet.sf]]+=1
     tx[txd[nodes[i].packet.txpow]]+=1
     x[i] = nodes[i].x
     y[i] = nodes[i].y
-    margins[smargins[nodes[i].margin_db]]+=1
+    if ADR:
+        margins[smargins[nodes[i].margin_db]]+=1
+        margin_db[i] = nodes[i].margin_db
     # der[i] = nodes[i].noack/(nodes[i].sent)#nodeder2[i]
     number_BS[i] = np.average(nodes[i].availableBS)
     avdist[i] = np.average(nodes[i].dist)
-    margin_db[i] = nodes[i].margin_db
     # number_BS[i] = nodes[i].highestRSSI[]
 plt.scatter(x,y,c=der)
 plt.title("DER: {:.2f}% - {}".format(np.average(der)*100, ADRtype))
@@ -1027,12 +1033,14 @@ fname="file{}-{}-DER.png".format(numberBS,ADRtype)
 plt.savefig(fname,dpi=200)
 plt.show()
 
-plt.scatter(avdist,margin_db,c=der)
-plt.colorbar()
-fname="file{}-{}-margins.png".format(numberBS,ADRtype)
-plt.savefig(fname,dpi=200)
-plt.show()
-
+if ADR:
+    plt.scatter(avdist,margin_db,c=der)
+    plt.colorbar()
+    fname="file{}-{}-margins.png".format(numberBS,ADRtype)
+    plt.savefig(fname,dpi=200)
+    plt.show()
+if not ADR:
+    DER_ref = 0.8
 plt.scatter(avdist,der,c=margin_db)
 plt.colorbar()
 plt.plot([min(avdist),max(avdist)],
