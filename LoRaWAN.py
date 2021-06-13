@@ -2,19 +2,19 @@
 # -*- coding: utf-8 -*-
 """
  An updated version of LoRaSim 0.2.1 to simulate collisions in confirmable
- LoRaWAN with a datasize target
+ LoRaWAN with a sim_time target
  author: Khaled Abdelfadeel khaled.abdelfadeel@mycit.ie
 """
 
 """
  SYNOPSIS:
-   ./confirmablelorawan.py <nodes> <avgsend> <datasize> <maxDist> <number of BS> <collision> <randomseed> 
+   ./confirmablelorawan.py <nodes> <avgsend> <sim_time> <maxDist> <number of BS> <collision> <randomseed> 
  DESCRIPTION:
     nodes
         number of nodes to simulate
     avgsend
         average sending interval in seconds
-    datasize
+    sim_time
         Size of data that each device sends in bytes
     collision
         0   simplified check. Two packets collide when they arrive at the same time, on the same frequency and SF
@@ -30,6 +30,7 @@
 """
 
 # from typing_extensions import Required
+import enum
 import simpy
 import random
 import numpy as np
@@ -52,9 +53,9 @@ graphics = 0
 #sf10 = np.array([10,-132.75,-130.25,-128.75])
 #sf11 = np.array([11,-134.5,-132.75,-130])
 #sf12 = np.array([12,-133.25,-132.25,-132.25])
-sf7 = np.array([7,-124,-120,-117.0])
-sf8 = np.array([8,-127,-123,-120.0])
-sf9 = np.array([9,-130,-126,-123.0])
+sf7 =  np.array([7, -124,-120,-117.0])
+sf8 =  np.array([8, -127,-123,-120.0])
+sf9 =  np.array([9, -130,-126,-123.0])
 sf10 = np.array([10,-133,-129,-126.0])
 sf11 = np.array([11,-135,-131.52,-128.51])
 sf12 = np.array([12,-137,-134,-131.0])
@@ -180,7 +181,8 @@ def checkACK(packet):
         tempairtime = airtime(12, CodingRate, AckMessLen+LorawanHeader, Bandwidth)
         nearstACK1p[np.argmax(abs(packet.highestRSSI[-1])),chanlindex] = timeofacking+(tempairtime/0.01)
         nodes[packet.nodeid].rxtime += tempairtime
-        nodes[packet.nodeid].downlinkrcvd.append([timeofacking, 1])
+        nodes[packet.nodeid].acking=[packet.frameid, timeofacking, 1]
+        # nodes[packet.nodeid].downlinkrcvd.append([timeofacking, 1])
         return packet.acked
     else:
         # this packet can not be acked
@@ -197,7 +199,8 @@ def checkACK(packet):
         tempairtime = airtime(12, CodingRate, AckMessLen+LorawanHeader, Bandwidth)
         nearstACK10p[np.argmax(abs(packet.highestRSSI[-1]))] = timeofacking+(tempairtime/0.1)
         nodes[packet.nodeid].rxtime += tempairtime
-        nodes[packet.nodeid].downlinkrcvd.append([timeofacking, 2])
+        nodes[packet.nodeid].acking=[packet.frameid, timeofacking,2]
+        # nodes[packet.nodeid].downlinkrcvd.append([timeofacking, 2])
         return packet.acked
     else:
         # this packet can not be acked
@@ -369,9 +372,9 @@ def airtime(sf,cr,pl,bw):
 # this function creates a node
 #
 class myNode():
-    def __init__(self, nodeid, bs, period, datasize, ADR, ADRtype, margin_db):
+    def __init__(self, nodeid, bs, period, sim_time, ADR, ADRtype, margin_db):
         self.nodeid = nodeid
-        self.buffer = datasize
+        self.buffer = sim_time
         self.bs = bs
         self.first = 1
         self.period = period
@@ -387,7 +390,9 @@ class myNode():
         self.x = 0
         self.y = 0
         self.uplink = []
-        self.downlinkrcvd = []
+        self.downlink = []
+        self.acking = [0,0]
+        # self.downlinkrcvd = []
         self.edclass = "A"
         self.highestRSSI = []
         self.availableBS = []
@@ -417,6 +422,7 @@ class myNode():
             self.ADRcommand = 0
             self.firstADR = False
             self.DER_ref = DER_ref
+            self.delay = []
         self.last_count = -1
         self.frame_counting = []
         # this is very complex prodecure for placing nodes
@@ -451,7 +457,7 @@ class myNode():
                 found = 1
         self.dist = np.sqrt((self.x-bsx)*(self.x-bsx)+(self.y-bsy)*(self.y-bsy))
         # print('node %d' %nodeid, "x", self.x, "y", self.y, "dist: ", self.dist)
-
+        self.PL = GL - Lpld0 - 10*gamma*np.log10(self.dist/d0)
         self.txpow = 0
 
         # graphics for node
@@ -473,7 +479,7 @@ class myNode():
         return SNRm
 
     def newMargindB(self, DER_inst):
-        node.DER_inst.append(DER_inst)
+        self.DER_inst.append(DER_inst)
         if DER_inst < self.DER_ref:
             self.margin_db = min(self.margin_db + 5, 30)
         elif DER_inst > self.DER_ref * 1.15:
@@ -483,7 +489,7 @@ class myNode():
 
     def calc_ADR_NS(self):
         if self.packet.frameid > self.last_count:
-            if env.now < datasize/2:#self.buffer <= datasize/2:
+            if env.now > sim_time/2:
                 self.recv = self.recv + 1
             self.last_count = self.packet.frameid
             self.RSSIhist.append(max(self.packet.rssi))
@@ -501,15 +507,17 @@ class myNode():
 
         if len(self.RSSIhist) == 20 and self.ADR:
             self.firstADR = True
+            SNR = np.array(self.RSSIhist) + 174 - 10 * math.log10(self.packet.bw*1e3)
             self.ADRsf = self.packet.sf
             self.ADRtx = self.packet.txpow
-            SNR = np.array(self.RSSIhist) + 174 - 10 * math.log10(self.packet.bw*1e3)
             SNRm = self.SNRm_dict[self.ADRtype](SNR)
             # print(SNRm)
-            # print(np.max(SNR))
             # print("")
-            self.SNRhist.append(SNRm)
             Nstep = int((SNRm - self.margin_db - self.required_SNR[self.ADRsf])/3)
+            self.SNRhist.append(SNRm)
+            # self.Nstep.append(Nstep)
+            # print("SNRm: {}, Nstep: {}, SF: {}, Pt: {}, Required: {}".format(SNRm, Nstep, self.ADRsf,self.ADRtx, self.required_SNR[self.ADRsf]))
+            # print(Nstep)
             # print("in:\nnode {} SF: {}, PT: {}, NSTEP: {}".format(self.nodeid,self.ADRsf,self.ADRtx,Nstep))
             if Nstep < 0:
                 while(self.ADRtx < 14 and Nstep < 0):
@@ -529,7 +537,7 @@ class myNode():
             if self.ADRsf != 0:
                 self.packet.sf = self.ADRsf
                 self.packet.txpow = self.ADRtx
-                # delay = self.packet.frameid - self.ADRcommand
+                self.delay.append([self.packet.frameid - self.ADRcommand])
             # print("SF: {}, PT: {}, delay: {}\nout".format(self.packet.sf ,self.packet.txpow,delay))
 
     def calc_ADR_ED(self):
@@ -634,11 +642,15 @@ def lin2dBm(value):
     return 10*np.log10(value/1e-3)
 global maxretr
 maxretr = 0
-def transmit(env,node):
-    while env.now < datasize: #node.buffer > 0.0:
-        # print(env.now)
+
+def transmit(env,node,first_transmission):
+    if first_transmission==0:
+        first_transmission = random.expovariate(1.0/float(1000))
+        yield env.timeout(first_transmission)
+        first_transmission = 1
+    while env.now < sim_time: #node.buffer > 0.0:
         h = np.random.rayleigh(np.sqrt(2/np.pi))
-        node.packet.rssi = lin2dBm(h**2 * dBm2lin(node.packet.txpow + GL - Lpld0 - 10*gamma*np.log10(node.dist/d0)))#node.packet.txpow - Lpld0 - 10*gamma*math.log10(node.dist/d0)# - np.random.normal(-var, var)
+        node.packet.rssi = lin2dBm(h**2 * dBm2lin(node.packet.txpow + node.PL))#node.packet.txpow - Lpld0 - 10*gamma*math.log10(node.dist/d0)# - np.random.normal(-var, var)
         # add maximum number of retransmissions
         if (node.lstretans and node.lstretans <= maxretr):
             node.first = 0
@@ -650,24 +662,25 @@ def transmit(env,node):
             node.lstretans = 0
             node.packet.frameid += 1
             nexttx = random.expovariate(1.0/float(node.period))
-            while(nexttx < airtime(12, CodingRate, AckMessLen+LorawanHeader, Bandwidth)/0.01): # fixed DC
+            while(nexttx < airtime(12, CodingRate, AckMessLen+LorawanHeader, Bandwidth)*((1-0.01)/0.01)): # fixed DC
                 nexttx = random.expovariate(1.0/float(node.period))
-            if env.now < datasize/2: #node.buffer <= datasize/2:
+            if env.now > sim_time/2: #node.buffer <= sim_time/2:
                 node.sent = node.sent + 1
             yield env.timeout(nexttx)
 
+        ttime=env.now
         node.buffer -= PcktLength_SF[node.parameters.sf-7]
         # print "node {0.nodeid} buffer {0.buffer} bytes".format(node)
 
         # time sending and receiving
         # packet arrives -> add to base station
-        node.uplink.append([env.now, node.parameters.sf, node.parameters.txpow]) # Registers the time in which a node starts an uplink
         if (node in packetsAtBS):
             print ("ERROR: packet already in")
         else:
             sensitivity = sensi[node.packet.sf - 7, [125,250,500].index(node.packet.bw) + 1]
             node.packet.BS = np.where(node.packet.rssi>=sensitivity)[0]
             if (node.packet.rssi < sensitivity).all():
+                node.uplink.append([node.packet.frameid,ttime, node.packet.sf, node.packet.txpow, node.packet.rssi/node.packet.rssi*-1000]) # Registers the time in which a node starts an uplink
                 # print "node {}: packet will be lost".format(node.nodeid)
                 node.packet.lost = True
             else:
@@ -691,13 +704,14 @@ def transmit(env,node):
                 else:
                     node.packet.collided = 1
                 node.packet.rssi = node.packet.rssi*RSSI_id - np.logical_not(RSSI_id)*1000
+                node.uplink.append([node.packet.frameid,ttime, node.packet.sf, node.packet.txpow, node.packet.rssi]) # Registers the time in which a node starts an uplink
                 node.packet.highestRSSI.append(np.array(node.packet.rssi))
                 node.packet.availableBS.append((RSSI_id).astype(int))
                 # if(not node.packet.perror and node.packet.collided == 0):
                     
                 packetsAtBS.append(node)
                 node.packet.addTime = env.now
-
+        print(node.packet.rectime)
         yield env.timeout(node.packet.rectime)
 
         if (node.packet.lost == False\
@@ -715,13 +729,14 @@ def transmit(env,node):
                 #if((14 - Lpld0 - 10*gamma*math.log10(node.dist/d0) - np.random.normal(-var, var)) > sensi[12-7, 1]): # SF12 and Tx14
                 # the ack is not lost
                 if downlinkPr >= sensi[12-7,1]:
+                    node.downlink.append([*node.acking,chosen_BS,downlinkPr])
                     node.packet.acklost = 0
                     # print("node {} acked! RSSI: {:.2f}".format(node.nodeid,downlinkPr))
 
                 else:
                 # ack is lost
                     # print("node {} ack lost RSSI: {:.2f}".format(node.nodeid,downlinkPr))
-                    node.downlinkrcvd.pop()
+                    # node.downlinkrcvd.pop()
                     node.packet.acklost = 1
             else:
                 node.packet.acked = 0
@@ -755,7 +770,7 @@ def transmit(env,node):
         elif node.packet.collided == 1:
             #node.buffer += PcktLength_SF[node.parameters.sf-7]
             # print "node {0.nodeid} buffer {0.buffer} bytes".format(node)
-            if node.lstretans >= maxretr and env.now <= datasize/2:#node.buffer <= datasize/2:
+            if node.lstretans >= maxretr and env.now >= sim_time/2:#node.buffer <= sim_time/2:
                 node.coll = node.coll + 1
                 global nrCollisions
                 nrCollisions = nrCollisions +1
@@ -801,7 +816,7 @@ margin_db = 0
 if len(sys.argv) >= 6:
     nrNodes = int(sys.argv[1])
     avgSendTime = int(sys.argv[2])
-    datasize = float(sys.argv[3])*60*60*24#int(sys.argv[3])
+    sim_time = float(sys.argv[3])*60*60*24#int(sys.argv[3])
     maxDist = float(sys.argv[4])
     numberBS = int(sys.argv[5])
     ADR = bool(int(sys.argv[6]))
@@ -817,15 +832,14 @@ if len(sys.argv) >= 6:
         Rnd = random.seed(int(sys.argv[8]))
         rs = int(sys.argv[8])
     print ("Nodes:", nrNodes)
-    print ("DataSize [bytes]", datasize)
+    print ("DataSize [bytes]", sim_time)
     print ("AvgSendTime (exp. distributed):",avgSendTime)
     print ("Number of BS: ", numberBS)
     print ("Full Collision: ", full_collision)
     print ("Random Seed: ", rs)
 else:
-    print ("usage: ./confirmablelorawan <nodes> <avgsend> <datasize> <collision> <randomseed>")
+    print ("usage: ./confirmablelorawan <nodes> <avgsend> <sim_time> <collision> <randomseed>")
     exit(-1)
-
 # global stuff
 nodes = []
 nodeder1 = [0 for i in range(0,nrNodes)]
@@ -882,11 +896,11 @@ if (graphics == 1):
 start = time.time()
 for i in range(0,nrNodes):
     # myNode takes period (in ms), base station id packetlen (in Bytes)
-    node = myNode(i,bsId, avgSendTime, datasize, ADR, ADRtype, margin_db)
+    node = myNode(i,bsId, avgSendTime, sim_time, ADR, ADRtype, margin_db)
     nodes.append(node)
     node.parameters = assignParameters(node.nodeid, node.dist)
     node.packet = myPacket(node.nodeid, node.parameters.freq, node.parameters.sf, node.parameters.bw, node.parameters.cr, node.parameters.txpow, node.dist)
-    env.process(transmit(env,node))
+    env.process(transmit(env,node,0))
 
 
 #prepare show
@@ -897,7 +911,7 @@ if (graphics == 1):
     plt.show()
 
 # start simulation
-env.run(until=datasize)
+env.run(until=sim_time)
 end = time.time()
 
 print("time",(end-start))
@@ -953,15 +967,44 @@ print ("CollectionTime: ", env.now)
 fname = str("confirmablelorawan") + ".dat"
 print (fname)
 if os.path.isfile(fname):
-     res= "\n" + str(sys.argv[5]) + ", " + str(full_collision) + ", " + str(nrNodes) + ", " + str(avgSendTime) + ", " + str(datasize) + ", " + str(sent) + ", "  + str(nrCollisions) + ", "  + str(nrLost) + ", "  + str(nrLostError) + ", " +str(nrNoACK) + ", " +str(nrACKLost) + ", " + str(env.now)+ ", " + str(der1) + ", " + str(der2)  + ", " + str(energy) + ", "  + str(nodefair1) + ", "  + str(nodefair2) + ", "  + str(SFdistribution)
+     res= "\n" + str(sys.argv[5]) + ", " + str(full_collision) + ", " + str(nrNodes) + ", " + str(avgSendTime) + ", " + str(sim_time) + ", " + str(sent) + ", "  + str(nrCollisions) + ", "  + str(nrLost) + ", "  + str(nrLostError) + ", " +str(nrNoACK) + ", " +str(nrACKLost) + ", " + str(env.now)+ ", " + str(der1) + ", " + str(der2)  + ", " + str(energy) + ", "  + str(nodefair1) + ", "  + str(nodefair2) + ", "  + str(SFdistribution)
 else:
-     res = "#randomseed, collType, nrNodes, TransRate, DataSize, nrTransmissions, nrCollisions, nrlost, nrlosterror, nrnoack, nracklost, CollectionTime, DER1, DER2, OverallEnergy, nodefair1, nodefair2, sfdistribution\n" + str(sys.argv[5]) + ", " + str(full_collision) + ", " + str(nrNodes) + ", " + str(avgSendTime) + ", " + str(datasize) + ", " + str(sent) + ", "  + str(nrCollisions) + ", "  + str(nrLost) + ", "  + str(nrLostError) + ", " +str(nrNoACK) + ", " +str(nrACKLost) + ", " + str(env.now)+ ", " + str(der1) + ", " + str(der2)  + ", " + str(energy) + ", "  + str(nodefair1) + ", "  + str(nodefair2) + ", "  + str(SFdistribution)
+     res = "#randomseed, collType, nrNodes, TransRate, DataSize, nrTransmissions, nrCollisions, nrlost, nrlosterror, nrnoack, nracklost, CollectionTime, DER1, DER2, OverallEnergy, nodefair1, nodefair2, sfdistribution\n" + str(sys.argv[5]) + ", " + str(full_collision) + ", " + str(nrNodes) + ", " + str(avgSendTime) + ", " + str(sim_time) + ", " + str(sent) + ", "  + str(nrCollisions) + ", "  + str(nrLost) + ", "  + str(nrLostError) + ", " +str(nrNoACK) + ", " +str(nrACKLost) + ", " + str(env.now)+ ", " + str(der1) + ", " + str(der2)  + ", " + str(energy) + ", "  + str(nodefair1) + ", "  + str(nodefair2) + ", "  + str(SFdistribution)
 newres=re.sub('[^#a-zA-Z0-9 \n\.]','',res)
 print (newres)
 with open(fname, "a") as myfile:
     myfile.write(newres)
 myfile.close()
 
+import pandas as pd
+if ADRtype != "ADRx":
+    sim_name = ADRtype+"-"+str(sim_time/(60*60*24))+"d-"+str(nrNodes)+"ED-"+str(maxDist)+"m-"+str(margin_db)+"dB-"+str(numberBS)+"BS-"+str(rs)+".csv"
+else:
+    sim_name = ADRtype+"-"+str(sim_time/(60*60*24))+"d-"+str(nrNodes)+"ED-"+str(maxDist)+"m-"+str(DER_ref)+"ref-"+str(numberBS)+"BS-"+str(rs)+".csv"
+
+# Save scalars:
+fname="scalars-"+sim_name
+nodeder2.insert(0,"DER")
+margins = [0]*(nrNodes+1)
+margins[0]="margin_db"
+dist = [0]*(nrNodes)
+for i,node in enumerate(nodes):
+    margins[i+1] = node.margin_db
+    dist[i] = node.dist
+dist=np.array(dist,dtype='<U11')
+dist = np.insert(dist,0,["BS_"+str(i) for i in range(numberBS)],axis=0)
+scalars = np.vstack((nodeder2,margins,dist.T))
+columns = ["scalar",*["node_"+str(i) for i in range(nrNodes)]]
+df_scalars = pd.DataFrame(scalars,columns=columns).to_csv(fname,index=False)
+
+# Save vectors:
+fname = "uplink-vectors-"+sim_name
+finalDF = pd.concat([pd.DataFrame(node.uplink, columns=["FrameID","Time", "SF", "Pt", "RSSI"]) for node in nodes], keys=["node"+str(i) for i in range(nrNodes)],axis=1)
+finalDF.to_csv(fname,index=False)
+
+fname = "downlink-vectors-"+sim_name
+finalDF = pd.concat([pd.DataFrame(node.downlink, columns=["FrameID","Time", "Receive Window", "BS", "RSSI"]) for node in nodes], keys=["node"+str(i) for i in range(nrNodes)],axis=1)
+finalDF.to_csv(fname,index=False)
 # import csv
 # for node in nodes:
 #   with open('UL'+str(node.nodeid)+'.csv', 'w') as csv_file:
@@ -972,91 +1015,92 @@ myfile.close()
 #     csv_reader = csv.writer(csv_file)
 #     for reception in node.downlinkrcvd:
 #       csv_reader.writerow(reception)
-x = np.zeros(len(nodes))
-y = np.zeros(len(nodes))
-der = nodeder2#np.zeros(len(nodes))
-number_BS = np.zeros(len(nodes))
-avdist = np.zeros(len(nodes))
-sf = [0,0,0,0,0,0]
-tx = [0,0,0,0,0,0,0]
-sfd = {
-    7:  0,
-    8:  1,
-    9:  2,
-    10: 3,
-    11: 4,
-    12: 5
-}
+# print(nodes[0].dist)
+# x = np.zeros(len(nodes))
+# y = np.zeros(len(nodes))
+# der = nodeder2#np.zeros(len(nodes))
+# number_BS = np.zeros(len(nodes))
+# avdist = np.zeros(len(nodes))
+# sf = [0,0,0,0,0,0]
+# tx = [0,0,0,0,0,0,0]
+# sfd = {
+#     7:  0,
+#     8:  1,
+#     9:  2,
+#     10: 3,
+#     11: 4,
+#     12: 5
+# }
 
-txd = {
-    2:  0,
-    4:  1,
-    6:  2,
-    8:  3,
-    10: 4,
-    12: 5,
-    14: 6
-}
+# txd = {
+#     2:  0,
+#     4:  1,
+#     6:  2,
+#     8:  3,
+#     10: 4,
+#     12: 5,
+#     14: 6
+# }
 
-smargins = {
-    5:      0,
-    7.5:    1,
-    10:     2,
-    12.5:   3,
-    15:     4,
-    17.5:   5,
-    20:     6,
-    22.5:   7,
-    25:     8,
-    27.5:   9,
-    30:    10
-}
-margins = [0]*11
-margin_db = np.ones(len(nodes))
-for i in range(len(nodes)):
-    sf[sfd[nodes[i].packet.sf]]+=1
-    tx[txd[nodes[i].packet.txpow]]+=1
-    x[i] = nodes[i].x
-    y[i] = nodes[i].y
-    if ADR:
-        margins[smargins[nodes[i].margin_db]]+=1
-        margin_db[i] = nodes[i].margin_db
-    # der[i] = nodes[i].noack/(nodes[i].sent)#nodeder2[i]
-    number_BS[i] = np.average(nodes[i].availableBS)
-    avdist[i] = np.average(nodes[i].dist)
+# smargins = {
+#     5:      0,
+#     7.5:    1,
+#     10:     2,
+#     12.5:   3,
+#     15:     4,
+#     17.5:   5,
+#     20:     6,
+#     22.5:   7,
+#     25:     8,
+#     27.5:   9,
+#     30:    10
+# }
+# margins = [0]*11
+# margin_db = np.ones(len(nodes))
+# for i in range(len(nodes)):
+#     sf[sfd[nodes[i].packet.sf]]+=1
+#     tx[txd[nodes[i].packet.txpow]]+=1
+#     x[i] = nodes[i].x
+#     y[i] = nodes[i].y
+#     if ADR:
+#         margins[smargins[nodes[i].margin_db]]+=1
+#         margin_db[i] = nodes[i].margin_db
+#     # der[i] = nodes[i].noack/(nodes[i].sent)#nodeder2[i]
+#     number_BS[i] = np.average(nodes[i].availableBS)
+#     avdist[i] = np.average(nodes[i].dist)
     # number_BS[i] = nodes[i].highestRSSI[]
-plt.scatter(x,y,c=der)
-plt.title("DER: {:.2f}% - {}".format(np.average(der)*100, ADRtype))
-plt.scatter(bsx, bsy, s=100, marker='*',c='red')
-plt.colorbar()
-fname="file{}-{}-DER.png".format(numberBS,ADRtype)
-plt.savefig(fname,dpi=200)
-plt.show()
-
-if ADR:
-    plt.scatter(avdist,margin_db,c=der)
-    plt.colorbar()
-    fname="file{}-{}-margins.png".format(numberBS,ADRtype)
-    plt.savefig(fname,dpi=200)
-    plt.show()
-if not ADR:
-    DER_ref = 0.8
-plt.scatter(avdist,der,c=margin_db)
-plt.colorbar()
-plt.plot([min(avdist),max(avdist)],
-         [DER_ref, DER_ref],c='red',linestyle='dashed')
-fname="file{}-{}-DER_nodes.png".format(numberBS,ADRtype)
-plt.savefig(fname,dpi=200)
-plt.show()
-
-print(sf)
-print(tx)
-print(margins)
-print((np.array(der)>=DER_ref).sum()/len(der))
-# plt.scatter(avdist,number_BS,alpha=0.5,c=der)
+# plt.scatter(x,y,c=der)
+# plt.title("DER: {:.2f}% - {}".format(np.average(der)*100, ADRtype))
+# plt.scatter(bsx, bsy, s=100, marker='*',c='red')
 # plt.colorbar()
+# fname="file{}-{}-DER.png".format(numberBS,ADRtype)
+# plt.savefig(fname,dpi=200)
 # plt.show()
-print ("Finish")
+
+# if ADR:
+#     plt.scatter(avdist,margin_db,c=der)
+#     plt.colorbar()
+#     fname="file{}-{}-margins.png".format(numberBS,ADRtype)
+#     plt.savefig(fname,dpi=200)
+#     plt.show()
+# if not ADR:
+#     DER_ref = 0.8
+# plt.scatter(avdist,der,c=margin_db)
+# plt.colorbar()
+# plt.plot([min(avdist),max(avdist)],
+#          [DER_ref, DER_ref],c='red',linestyle='dashed')
+# fname="file{}-{}-DER_nodes.png".format(numberBS,ADRtype)
+# plt.savefig(fname,dpi=200)
+# plt.show()
+
+# print(sf)
+# print(tx)
+# print(margins)
+# print((np.array(der)>=DER_ref).sum()/len(der))
+# # plt.scatter(avdist,number_BS,alpha=0.5,c=der)
+# # plt.colorbar()
+# # plt.show()
+# print ("Finish")
 
 # print(np.array(nodes[0].highestRSSI))
 # print(nodes[0].availableBS)
