@@ -649,7 +649,7 @@ def transmit(env,node,first_transmission):
         yield env.timeout(first_transmission)
         first_transmission = 1
     while env.now < sim_time: #node.buffer > 0.0:
-        h = np.random.rayleigh(np.sqrt(2/np.pi))
+        h = np.random.rayleigh(np.sqrt(2/np.pi),numberBS)
         node.packet.rssi = lin2dBm(h**2 * dBm2lin(node.packet.txpow + node.PL))#node.packet.txpow - Lpld0 - 10*gamma*math.log10(node.dist/d0)# - np.random.normal(-var, var)
         # add maximum number of retransmissions
         if (node.lstretans and node.lstretans <= maxretr):
@@ -711,7 +711,6 @@ def transmit(env,node,first_transmission):
                     
                 packetsAtBS.append(node)
                 node.packet.addTime = env.now
-        print(node.packet.rectime)
         yield env.timeout(node.packet.rectime)
 
         if (node.packet.lost == False\
