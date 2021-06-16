@@ -42,8 +42,9 @@ import os
 import operator
 import BS_coord
 import time
+import pandas as pd
+
 # turn on/off graphics
-graphics = 0
 
 # this is an array with measured values for sensitivity
 # see paper, Table 3
@@ -431,6 +432,7 @@ class myNode():
         found = 0
         rounds = 0
         global nodes
+        global maxDist
         while (found == 0 and rounds < 100):
             a = random.random()
             b = random.random()
@@ -460,11 +462,7 @@ class myNode():
         self.PL = GL - Lpld0 - 10*gamma*np.log10(self.dist/d0)
         self.txpow = 0
 
-        # graphics for node
-        global graphics
-        if (graphics == 1):
-            global ax
-            ax.add_artist(plt.Circle((self.x, self.y), 2, fill=True, color='blue'))
+
     
     def SNR_ADR_TTN(self, SNR):
         return np.max(SNR)
@@ -810,200 +808,180 @@ def transmit(env,node,first_transmission):
 #
 
 # get arguments
-ADRtype = "none"
-margin_db = 0
-if len(sys.argv) >= 6:
-    nrNodes = int(sys.argv[1])
-    avgSendTime = int(sys.argv[2])
-    sim_time = float(sys.argv[3])*60*60*24#int(sys.argv[3])
-    maxDist = float(sys.argv[4])
-    numberBS = int(sys.argv[5])
-    ADR = bool(int(sys.argv[6]))
-    if ADR and len(sys.argv) >= 10:
-        ADRtype = sys.argv[7]
-        margin_db = float(sys.argv[8])
-        DER_ref = float(sys.argv[9])
-        full_collision = int(sys.argv[10])
-        Rnd = random.seed(int(sys.argv[11]))
-        rs = int(sys.argv[11])
+def main(argv):
+    global nrNodes, avgSendTime, sim_time, maxDist, numberBS, ADR, ADRtype, margin_db, DER_ref, full_collision, Rnd, rs
+    ADRtype = "none"
+    margin_db = 0
+    if len(argv) >= 6:
+        nrNodes = int(argv[0])
+        avgSendTime = int(argv[1])
+        sim_time = float(argv[2])*60*60*24#int(argv[3])
+        maxDist = float(argv[3])
+        numberBS = int(argv[4])
+        ADR = bool(int(argv[5]))
+        if ADR and len(argv) >= 9:
+            ADRtype = argv[6]
+            margin_db = float(argv[7])
+            DER_ref = float(argv[8])
+            full_collision = int(argv[9])
+            Rnd = random.seed(int(argv[10]))
+            rs = int(argv[10])
+        else:
+            full_collision = int(argv[6])
+            Rnd = random.seed(int(argv[7]))
+            rs = int(argv[7])
+        print ("Nodes:", nrNodes)
+        print ("DataSize [bytes]", sim_time)
+        print ("AvgSendTime (exp. distributed):",avgSendTime)
+        print ("Number of BS: ", numberBS)
+        print ("Full Collision: ", full_collision)
+        print ("Random Seed: ", rs)
     else:
-        full_collision = int(sys.argv[7])
-        Rnd = random.seed(int(sys.argv[8]))
-        rs = int(sys.argv[8])
-    print ("Nodes:", nrNodes)
-    print ("DataSize [bytes]", sim_time)
-    print ("AvgSendTime (exp. distributed):",avgSendTime)
-    print ("Number of BS: ", numberBS)
-    print ("Full Collision: ", full_collision)
-    print ("Random Seed: ", rs)
-else:
-    print ("usage: ./confirmablelorawan <nodes> <avgsend> <sim_time> <collision> <randomseed>")
-    exit(-1)
-# global stuff
-nodes = []
-nodeder1 = [0 for i in range(0,nrNodes)]
-nodeder2 = [0 for i in range(0,nrNodes)]
-tempdists = [0 for i in range(0,nrNodes)]
-packetsAtBS = []
-SFdistribution = [0 for x in range(0,6)]
-BWdistribution = [0 for x in range(0,3)]
-CRdistribution = [0 for x in range(0,4)]
-TXdistribution = [0 for x in range(0,13)]
-env = simpy.Environment()
+        print ("usage: ./confirmablelorawan <nodes> <avgsend> <sim_time> <collision> <randomseed>")
+        exit(-1)
+    # global stuff
 
-# maximum number of packets the BS can receive at the same time
-maxBSReceives = 8
+    global nodes, nodeder1, nodeder2, tempdists, packetsAtBS, SFdistribution, BWdistribution, CRdistribution, TXdistribution, env, maxBSReceives
+    nodes = []
+    nodeder1 = [0 for i in range(0,nrNodes)]
+    nodeder2 = [0 for i in range(0,nrNodes)]
+    tempdists = [0 for i in range(0,nrNodes)]
+    packetsAtBS = []
+    SFdistribution = [0 for x in range(0,6)]
+    BWdistribution = [0 for x in range(0,3)]
+    CRdistribution = [0 for x in range(0,4)]
+    TXdistribution = [0 for x in range(0,13)]
+    env = simpy.Environment()
 
-# max distance: 300m in city, 3000 m outside (5 km Utz experiment)
-# also more unit-disc like according to Utz
-bsId = 1
-nrCollisions = 0
-nrReceived = 0
-nrProcessed = 0
-nrLost = 0
-nrLostError = 0
-nrNoACK = 0
-nrACKLost = 0
+    # maximum number of packets the BS can receive at the same time
+    maxBSReceives = 8
 
-Ptx = 9.75
-gamma = 2.32 #2.08
-d0 = 1000 #40.0
-var = 7.8 #2.0
-Lpld0 = 128.95 #127.41
-GL = 0
-minsensi = np.amin(sensi[:,[125,250,500].index(Bandwidth) + 1])
-Lpl = Ptx - minsensi
-# maxDist = d0*(10**((Lpl-Lpld0)/(10.0*gamma)))
-print ("maxDist:", maxDist)
+    # max distance: 300m in city, 3000 m outside (5 km Utz experiment)
+    # also more unit-disc like according to Utz
+    global bsId, nrCollisions, nrReceived, nrProcessed, nrLost, nrLostError, nrNoACK, nrACKLost
+    bsId = 1
+    nrCollisions = 0
+    nrReceived = 0
+    nrProcessed = 0
+    nrLost = 0
+    nrLostError = 0
+    nrNoACK = 0
+    nrACKLost = 0
 
-# base station placement
-BS_coordinates = BS_coord.base_coordinates(numberBS,maxDist)
-bsx = BS_coordinates[:,0]#maxDist+10
-bsy = BS_coordinates[:,1]#maxDist+10
-# xmax = bsx + maxDist + 10
-# ymax = bsy + maxDist + 10
+    global Ptx, gamma, d0, var, Lpld0, GL, minsensi, Lpl
+    Ptx = 9.75
+    gamma = 2.32 #2.08
+    d0 = 1000 #40.0
+    var = 7.8 #2.0
+    Lpld0 = 128.95 #127.41
+    GL = 0
+    minsensi = np.amin(sensi[:,[125,250,500].index(Bandwidth) + 1])
+    Lpl = Ptx - minsensi
+    # maxDist = d0*(10**((Lpl-Lpld0)/(10.0*gamma)))
+    print ("maxDist:", maxDist)
 
-# prepare graphics and add sink
-if (graphics == 1):
-    plt.ion()
-    plt.figure()
-    ax = plt.gcf().gca()
-    # XXX should be base station position
-    ax.add_artist(plt.Circle((bsx, bsy), 3, fill=True, color='green'))
-    ax.add_artist(plt.Circle((bsx, bsy), maxDist, fill=False, color='green'))
+    # base station placement
+    global BS_coordinates, bsx, bsy
+    BS_coordinates = BS_coord.base_coordinates(numberBS,maxDist)
+    bsx = BS_coordinates[:,0]#maxDist+10
+    bsy = BS_coordinates[:,1]#maxDist+10
+    # xmax = bsx + maxDist + 10
+    # ymax = bsy + maxDist + 10
 
-start = time.time()
-for i in range(0,nrNodes):
-    # myNode takes period (in ms), base station id packetlen (in Bytes)
-    node = myNode(i,bsId, avgSendTime, sim_time, ADR, ADRtype, margin_db)
-    nodes.append(node)
-    node.parameters = assignParameters(node.nodeid, node.dist)
-    node.packet = myPacket(node.nodeid, node.parameters.freq, node.parameters.sf, node.parameters.bw, node.parameters.cr, node.parameters.txpow, node.dist)
-    env.process(transmit(env,node,0))
+    start = time.time()
+    for i in range(0,nrNodes):
+        # myNode takes period (in ms), base station id packetlen (in Bytes)
+        node = myNode(i,bsId, avgSendTime, sim_time, ADR, ADRtype, margin_db)
+        nodes.append(node)
+        node.parameters = assignParameters(node.nodeid, node.dist)
+        node.packet = myPacket(node.nodeid, node.parameters.freq, node.parameters.sf, node.parameters.bw, node.parameters.cr, node.parameters.txpow, node.dist)
+        env.process(transmit(env,node,0))
 
 
-#prepare show
-if (graphics == 1):
-    plt.xlim([0, xmax])
-    plt.ylim([0, ymax])
-    plt.draw()
-    plt.show()
+    #prepare show
+    # start simulation
+    env.run(until=sim_time)
+    end = time.time()
 
-# start simulation
-env.run(until=sim_time)
-end = time.time()
+    print("time",(end-start))
+    #env.run(until=simtime)
 
-print("time",(end-start))
-#env.run(until=simtime)
+    # print stats and save into file
+    #print "nrCollisions ", nrCollisions
 
-# print stats and save into file
-#print "nrCollisions ", nrCollisions
+    # compute energy
+    # Transmit consumption in mA from -2 to +17 dBm
+    TX = [22, 22, 22, 23,                                      # RFO/PA0: -2..1
+        24, 24, 24, 25, 25, 25, 25, 26, 31, 32, 34, 35, 44,  # PA_BOOST/PA1: 2..14
+        82, 85, 90,                                          # PA_BOOST/PA1: 15..17
+        105, 115, 125]                                       # PA_BOOST/PA1+PA2: 18..20
+    RX = 16
+    V = 3.0     # voltage XXX
+    sent = sum(n.sent for n in nodes)
+    recv = sum(n.recv for n in nodes)
+    energy = sum(((node.packet.rectime * node.sent * TX[int(node.packet.txpow)+2])+(node.rxtime * RX)) * V  for node in nodes)  / 1e3
 
-# compute energy
-# Transmit consumption in mA from -2 to +17 dBm
-TX = [22, 22, 22, 23,                                      # RFO/PA0: -2..1
-      24, 24, 24, 25, 25, 25, 25, 26, 31, 32, 34, 35, 44,  # PA_BOOST/PA1: 2..14
-      82, 85, 90,                                          # PA_BOOST/PA1: 15..17
-      105, 115, 125]                                       # PA_BOOST/PA1+PA2: 18..20
-RX = 16
-V = 3.0     # voltage XXX
-sent = sum(n.sent for n in nodes)
-recv = sum(n.recv for n in nodes)
-energy = sum(((node.packet.rectime * node.sent * TX[int(node.packet.txpow)+2])+(node.rxtime * RX)) * V  for node in nodes)  / 1e3
+    print ("energy (in J): ", energy)
+    print ("sent packets: ", sent)
+    print ("collisions: ", nrCollisions)
+    print ("received packets: ", recv)
+    print ("processed packets: ", nrProcessed)
+    print ("lost packets: ", nrLost)
+    print ("Bad CRC: ", nrLostError)
+    print ("NoACK packets: ", nrNoACK)
+    # data extraction rate
+    der1 = (sent-nrCollisions)/float(sent) if sent!=0 else 0
+    print ("DER:", der1)
+    der2 = (recv)/float(sent) if sent!=0 else 0
+    print ("DER method 2:", der2)
 
-print ("energy (in J): ", energy)
-print ("sent packets: ", sent)
-print ("collisions: ", nrCollisions)
-print ("received packets: ", recv)
-print ("processed packets: ", nrProcessed)
-print ("lost packets: ", nrLost)
-print ("Bad CRC: ", nrLostError)
-print ("NoACK packets: ", nrNoACK)
-# data extraction rate
-der1 = (sent-nrCollisions)/float(sent) if sent!=0 else 0
-print ("DER:", der1)
-der2 = (recv)/float(sent) if sent!=0 else 0
-print ("DER method 2:", der2)
+    # data extraction rate per node
+    for i in range(0,nrNodes):
+        tempdists[i] = nodes[i].dist
+        nodeder1[i] = ((nodes[i].sent-nodes[i].coll)/(float(nodes[i].sent)) if float(nodes[i].sent)!=0 else 0)
+        nodeder2[i] = (nodes[i].recv/(float(nodes[i].sent)) if float(nodes[i].sent)!=0 else 0)
+    # calculate the fairness indexes per node
+    nodefair1 = (sum(nodeder1)**2/(nrNodes*sum([i*float(j) for i,j in zip(nodeder1,nodeder1)])) if (sum([i*float(j) for i,j in zip(nodeder1,nodeder1)]))!=0 else 0)
+    nodefair2 = (sum(nodeder2)**2/(nrNodes*sum([i*float(j) for i,j in zip(nodeder2,nodeder2)])) if (sum([i*float(j) for i,j in zip(nodeder2,nodeder2)]))!=0 else 0)
 
-# data extraction rate per node
-for i in range(0,nrNodes):
-    tempdists[i] = nodes[i].dist
-    nodeder1[i] = ((nodes[i].sent-nodes[i].coll)/(float(nodes[i].sent)) if float(nodes[i].sent)!=0 else 0)
-    nodeder2[i] = (nodes[i].recv/(float(nodes[i].sent)) if float(nodes[i].sent)!=0 else 0)
-# calculate the fairness indexes per node
-nodefair1 = (sum(nodeder1)**2/(nrNodes*sum([i*float(j) for i,j in zip(nodeder1,nodeder1)])) if (sum([i*float(j) for i,j in zip(nodeder1,nodeder1)]))!=0 else 0)
-nodefair2 = (sum(nodeder2)**2/(nrNodes*sum([i*float(j) for i,j in zip(nodeder2,nodeder2)])) if (sum([i*float(j) for i,j in zip(nodeder2,nodeder2)]))!=0 else 0)
+    print ("============================")
+    print ("SFdistribution: ", SFdistribution)
+    print ("BWdistribution: ", BWdistribution)
+    print ("CRdistribution: ", CRdistribution)
+    print ("TXdistribution: ", TXdistribution)
+    print ("CollectionTime: ", env.now)
 
-print ("============================")
-print ("SFdistribution: ", SFdistribution)
-print ("BWdistribution: ", BWdistribution)
-print ("CRdistribution: ", CRdistribution)
-print ("TXdistribution: ", TXdistribution)
-print ("CollectionTime: ", env.now)
+ 
+    if ADRtype != "ADRx":
+        folder_name = ADRtype+"-"+str(sim_time/(60*60*24))+"d-"+str(nrNodes)+"ED-"+str(maxDist)+"m-"+str(margin_db)+"dB-"+str(numberBS)+"BS"
+    else:
+        folder_name = ADRtype+"-"+str(sim_time/(60*60*24))+"d-"+str(nrNodes)+"ED-"+str(maxDist)+"m-"+str(DER_ref)+"ref-"+str(numberBS)+"BS"
+    sim_name=str(rs)+".csv"
+    # Save scalars:
+    if(not os.path.isdir(folder_name)):
+        os.mkdir(folder_name)
+    fname=folder_name+"/scalars-"+sim_name
+    nodeder2.insert(0,"DER")
+    margins = [0]*(nrNodes+1)
+    margins[0]="margin_db"
+    dist = [0]*(nrNodes)
+    for i,node in enumerate(nodes):
+        margins[i+1] = node.margin_db
+        dist[i] = node.dist
+    dist=np.array(dist,dtype='<U11')
+    dist = np.insert(dist,0,["BS_"+str(i) for i in range(numberBS)],axis=0)
+    scalars = np.vstack((nodeder2,margins,dist.T))
+    columns = ["scalar",*["node_"+str(i) for i in range(nrNodes)]]
+    pd.DataFrame(scalars,columns=columns).to_csv(fname,index=False)
 
-# save experiment data into a dat file that can be read by e.g. gnuplot
-# name of file would be:  exp0.dat for experiment 0
-fname = str("confirmablelorawan") + ".dat"
-print (fname)
-if os.path.isfile(fname):
-     res= "\n" + str(sys.argv[5]) + ", " + str(full_collision) + ", " + str(nrNodes) + ", " + str(avgSendTime) + ", " + str(sim_time) + ", " + str(sent) + ", "  + str(nrCollisions) + ", "  + str(nrLost) + ", "  + str(nrLostError) + ", " +str(nrNoACK) + ", " +str(nrACKLost) + ", " + str(env.now)+ ", " + str(der1) + ", " + str(der2)  + ", " + str(energy) + ", "  + str(nodefair1) + ", "  + str(nodefair2) + ", "  + str(SFdistribution)
-else:
-     res = "#randomseed, collType, nrNodes, TransRate, DataSize, nrTransmissions, nrCollisions, nrlost, nrlosterror, nrnoack, nracklost, CollectionTime, DER1, DER2, OverallEnergy, nodefair1, nodefair2, sfdistribution\n" + str(sys.argv[5]) + ", " + str(full_collision) + ", " + str(nrNodes) + ", " + str(avgSendTime) + ", " + str(sim_time) + ", " + str(sent) + ", "  + str(nrCollisions) + ", "  + str(nrLost) + ", "  + str(nrLostError) + ", " +str(nrNoACK) + ", " +str(nrACKLost) + ", " + str(env.now)+ ", " + str(der1) + ", " + str(der2)  + ", " + str(energy) + ", "  + str(nodefair1) + ", "  + str(nodefair2) + ", "  + str(SFdistribution)
-newres=re.sub('[^#a-zA-Z0-9 \n\.]','',res)
-print (newres)
-with open(fname, "a") as myfile:
-    myfile.write(newres)
-myfile.close()
+    # Save vectors:
+    fname = folder_name+"/uplink-vectors-"+sim_name
+    finalDF = pd.concat([pd.DataFrame(node.uplink, columns=["FrameID","Time", "SF", "Pt", "RSSI"]) for node in nodes], keys=["node"+str(i) for i in range(nrNodes)],axis=1)
+    finalDF.to_csv(fname,index=False)
 
-import pandas as pd
-if ADRtype != "ADRx":
-    sim_name = ADRtype+"-"+str(sim_time/(60*60*24))+"d-"+str(nrNodes)+"ED-"+str(maxDist)+"m-"+str(margin_db)+"dB-"+str(numberBS)+"BS-"+str(rs)+".csv"
-else:
-    sim_name = ADRtype+"-"+str(sim_time/(60*60*24))+"d-"+str(nrNodes)+"ED-"+str(maxDist)+"m-"+str(DER_ref)+"ref-"+str(numberBS)+"BS-"+str(rs)+".csv"
-
-# Save scalars:
-fname="scalars-"+sim_name
-nodeder2.insert(0,"DER")
-margins = [0]*(nrNodes+1)
-margins[0]="margin_db"
-dist = [0]*(nrNodes)
-for i,node in enumerate(nodes):
-    margins[i+1] = node.margin_db
-    dist[i] = node.dist
-dist=np.array(dist,dtype='<U11')
-dist = np.insert(dist,0,["BS_"+str(i) for i in range(numberBS)],axis=0)
-scalars = np.vstack((nodeder2,margins,dist.T))
-columns = ["scalar",*["node_"+str(i) for i in range(nrNodes)]]
-df_scalars = pd.DataFrame(scalars,columns=columns).to_csv(fname,index=False)
-
-# Save vectors:
-fname = "uplink-vectors-"+sim_name
-finalDF = pd.concat([pd.DataFrame(node.uplink, columns=["FrameID","Time", "SF", "Pt", "RSSI"]) for node in nodes], keys=["node"+str(i) for i in range(nrNodes)],axis=1)
-finalDF.to_csv(fname,index=False)
-
-fname = "downlink-vectors-"+sim_name
-finalDF = pd.concat([pd.DataFrame(node.downlink, columns=["FrameID","Time", "Receive Window", "BS", "RSSI"]) for node in nodes], keys=["node"+str(i) for i in range(nrNodes)],axis=1)
-finalDF.to_csv(fname,index=False)
+    fname = folder_name+"/downlink-vectors-"+sim_name
+    finalDF = pd.concat([pd.DataFrame(node.downlink, columns=["FrameID","Time", "Receive Window", "BS", "RSSI"]) for node in nodes], keys=["node"+str(i) for i in range(nrNodes)],axis=1)
+    finalDF.to_csv(fname,index=False)
 # import csv
 # for node in nodes:
 #   with open('UL'+str(node.nodeid)+'.csv', 'w') as csv_file:
