@@ -6,7 +6,7 @@ import time
 rep = 1
 margins = False
 replicas = True
-BSs = False
+BSs = True
 
 if margins:
     #NO ADR
@@ -74,11 +74,11 @@ if replicas:
     ADRs = ["ADR-TTN"]#, "ADR+"]
     for ADR in ADRs:
         argv[-5] = ADR
-        for i in range(1,3):
+        for i in range(0,9):
             argv[2] = i
             for j in range(rep):
                 argv[-1] = j
-                for dist in range(2500,5500,1000):
+                for dist in range(1500,6500,1000):
                     argv[4] = dist
                     LoRaWAN.main(argv)
     finish = time.time()
@@ -124,9 +124,9 @@ if BSs:
     # ADR
     argv = [1000,1200,0,20,1500,1,1,"ADR-TTN",10,0.8,1,0]
     ADRs = ["ADR-TTN"]#, "ADR+"]
-    for dist in range(1500,5500,1000):
+    for dist in range(1500,6500,1000):
         argv[4] = dist
-        for i in range(2,9):
+        for i in range(1,9):
             argv[5] = i
             for j in range(rep):
                 argv[-1] = j
